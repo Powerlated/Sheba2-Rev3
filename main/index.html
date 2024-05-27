@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset='utf-8'>
+    <meta http-equiv='X-UA-Compatible' content='IE=edge'>
+    <title>Sheba 2</title>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+
+    <style>
+        html {
+            font-family: Arial, Helvetica, sans-serif;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            justify-content: center;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        #joysticks {
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+        }
+
+        .joystick {
+            width: 30vw;
+            margin: 48px;
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Sheba 2 - Left to Drive, Right to Turn</h1>
+        <div id="joysticks">
+            <canvas class="joystick" id="drive" height="500" width="500"></canvas>
+            <canvas class="joystick" id="turn" height="500" width="500"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const stickDiameter = 200;
+        const crosshairWidth = 8;
+        const activeZoneRadius = 150;
+
+        function getMousePos(canvas, evt) {
+            let rect = canvas.getBoundingClientRect(), // abs. size of element
+                scaleX = canvas.width / rect.width,    // relationship bitmap vs. element for x
+                scaleY = canvas.height / rect.height;  // relationship bitmap vs. element for y
+
+            return {
+                x: (evt.clientX - rect.left) * scaleX,   // scale mouse coordinates after they have
+                y: (evt.clientY - rect.top) * scaleY     // been adjusted to be relative to element
+            }
+        }
+        class Joystick {
+            constructor(canvas, id, bgColor) {
+                this.bgColor = bgColor;
+                this.id = id;
+                this.ctx = canvas.getContext('2d');
+                canvas.onmousemove = this.onmousemove.bind(this);
+                canvas.onmouseleave = this.onmouseleave.bind(this);
+                canvas.onmouseenter = this.onmouseenter.bind(this);
+
+                canvas.ontouchstart = this.ontouchstart.bind(this);
+                canvas.ontouchend = this.ontouchend.bind(this);
+                canvas.ontouchcancel = this.ontouchcancel.bind(this);
+                canvas.ontouchmove = this.ontouchmove.bind(this);
+
+                /* x and y range: [-1, 1] */
+                this.x = 0;
+                this.y = 0;
+                this.oldX = 0;
+                this.oldY = 0;
+
+                this.isMouseOver = false;
+
+                this.postComplete = true;
+            }
+
+            ontouchstart() {
+                this.isMouseOver = true;
+            }
+            ontouchend() {
+                this.isMouseOver = false;
+                this.reset();
+            }
+            ontouchcancel() {
+            }
+
+            interaction(event) {
+                let w = this.ctx.canvas.width;
+                let h = this.ctx.canvas.height;
+
+                let centerX = w / 2;
+                let centerY = h / 2;
+
+                let mousePos = getMousePos(this.ctx.canvas, event);
+                this.x = (mousePos.x - centerX) / activeZoneRadius;
+                this.y = (mousePos.y - centerY) / activeZoneRadius;
+
+                if (this.x > 1) this.x = 1;
+                if (this.y > 1) this.y = 1;
+
+                if (this.x < -1) this.x = -1;
+                if (this.y < -1) this.y = -1;
+            }
+
+            /**
+             * @param {TouchEvent} e
+             */
+            ontouchmove(e) {
+                let touch = e.touches[0];
+                this.interaction(touch);
+            }
+
+            /**
+             * @param {MouseEvent} e
+             */
+            onmousemove(e) {
+                if (e.buttons & 1) {
+                    this.interaction(e);
+                } else {
+                    this.reset();
+                }
+            }
+
+            networkUpdate() {
+                if (this.postComplete) {
+                    this.postComplete = false;
+                    fetch(this.id, {
+                        method: "POST",
+                        body: this.x + " " + -this.y + "\n\n",
+                    }).then(() => {
+                        this.postComplete = true;
+                    });
+                }
+            }
+
+            update() {
+                if (this.isMouseOver) {
+                    let host = window.location.host;
+
+                    this.networkUpdate();
+                }
+
+                this.oldX = this.x;
+                this.oldY = this.y;
+            }
+
+            reset() {
+                this.x = 0;
+                this.y = 0;
+                this.networkUpdate();
+            }
+
+            /**
+             * @param {MouseEvent} e
+             */
+            onmouseleave(e) {
+                this.isMouseOver = false;
+            }
+
+            /**
+             * @param {MouseEvent} e
+             */
+            onmouseenter(e) {
+                this.isMouseOver = true;
+            }
+
+            draw() {
+                let w = this.ctx.canvas.width;
+                let h = this.ctx.canvas.height;
+
+                this.ctx.clearRect(0, 0, w, h);
+
+                /* Draw background circle */
+                this.ctx.fillStyle = this.bgColor;
+                this.ctx.beginPath();
+                this.ctx.arc(w / 2, h / 2, h / 2, 0, 2 * Math.PI);
+                this.ctx.fill();
+
+                /* Draw crosshair */
+                this.ctx.fillStyle = "#FFFFFF44"
+                this.ctx.fillRect(w / 2 - crosshairWidth / 2, 0, crosshairWidth, h);
+                this.ctx.fillRect(0, h / 2 - crosshairWidth / 2, w, crosshairWidth);
+                this.ctx.strokeStyle = "#FFFFFF44"
+                this.ctx.lineWidth = crosshairWidth;
+                this.ctx.beginPath();
+                this.ctx.arc(w / 2, h / 2, h / 2, 0, 2 * Math.PI);
+                this.ctx.stroke();
+
+                /* Draw joystick circle */
+                let offsX = this.x * activeZoneRadius;
+                let offsY = this.y * activeZoneRadius;
+                this.ctx.fillStyle = "#000000"
+                this.ctx.beginPath();
+                this.ctx.arc(w / 2 + offsX, h / 2 + offsY, stickDiameter / 2, 0, 2 * Math.PI);
+                this.ctx.fill();
+            }
+        }
+
+        let drive = new Joystick(document.querySelector("#drive"), "drive", "#87CEEB");
+        let turn = new Joystick(document.querySelector("#turn"), "turn", "#FFA500");
+
+        window.onmouseup = () => {
+            drive.reset();
+            turn.reset();
+        }
+
+        let oldTime = performance.now();
+        function frame() {
+            drive.draw();
+            turn.draw();
+
+            if (drive.isMouseOver) {
+                turn.reset();
+            } else if (turn.isMouseOver) {
+                drive.reset();
+            }
+
+            let time = performance.now();
+            if (time > oldTime + 10) {
+                drive.update();
+                turn.update();
+
+                oldTime = time;
+            }
+
+            requestAnimationFrame(frame);
+        }
+
+        requestAnimationFrame(frame);
+    </script>
+</body>
+
+</html>
