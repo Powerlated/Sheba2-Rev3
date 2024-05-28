@@ -3,10 +3,7 @@
 	url = https://github.com/espressif/arduino-esp32
 [submodule "components/ESPAsyncWebServer"]
 	path = components/ESPAsyncWebServer
-	url = https://github.com/me-no-dev/ESPAsyncWebServer
-[submodule "components/ESPAsyncTCP"]
-	path = components/ESPAsyncTCP
-	url = https://github.com/me-no-dev/ESPAsyncTCP
+	url = https://github.com/Powerlated/ESPAsyncWebServer
 [submodule "components/AsyncTCP"]
 	path = components/AsyncTCP
-	url = https://github.com/me-no-dev/AsyncTCP
+	url = https://github.com/Powerlated/AsyncTCP

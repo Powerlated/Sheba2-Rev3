@@ -26,17 +26,24 @@ const char* serverPassword = "rongwazi6511";
 const char* ssid = "Sheba2Control";
 const char* password = "Sheba2Control";
 
-extern const uint8_t index_html_start[] asm("_binary_index_html_start");
-extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+extern const char index_html_start[] asm("_binary_index_html_start");
+extern const char index_html_end[]   asm("_binary_index_html_end");
 const size_t index_html_size = (index_html_end - index_html_start);
 
-NetworkServer server(80);
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Create a WebSocket object
+AsyncWebSocket ws("/ws");
 
 #define STACK_SIZE 8192
 StaticTask_t task_blinky_tcb;
 StackType_t task_blinky_stack[STACK_SIZE];
 StaticTask_t task_motors_tcb;
 StackType_t task_motors_stack[STACK_SIZE];
+StaticTask_t task_motor_info_tcb;
+StackType_t task_motor_info_stack[STACK_SIZE];
+
 
 void task_blinky(void) {
   while (true) {
@@ -58,11 +65,20 @@ void task_motors(void) {
     if (xTaskGetTickCount() < motor_power_updated_time + MOTOR_TIMEOUT_MS) {
       motor_power(&motor_left, motor_left_power);
       motor_power(&motor_right, motor_right_power);
-    } else {
+    }
+    else {
       motor_power(&motor_left, 0);
       motor_power(&motor_right, 0);
     }
     vTaskDelay(1);
+  }
+}
+
+void task_motor_info(void) {
+  while (true) {
+    ESP_LOGI("main", "Drive: %f %f", drive_x, drive_y);
+    ESP_LOGI("main", "Turn: %f %f", turn_x, turn_y);
+    vTaskDelay(250);
   }
 }
 
@@ -94,9 +110,9 @@ void connect_to_wifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(serverSsid, serverPassword);
 
+  ESP_LOGI("main", "Waiting for successful connection...");
   while (WiFi.status() != WL_CONNECTED) {
-    ESP_LOGI("main", "Connecting...");
-    vTaskDelay(1000);
+    vTaskDelay(1);
   }
 
   ESP_LOGI("main", "WiFi connected.");
@@ -154,158 +170,79 @@ void init_peripherals() {
     &task_blinky_tcb);  /* Variable to hold the task's data structure. */
 
   xTaskCreateStatic(
-    (TaskFunction_t)task_motors,       /* Function that implements the task. */
-    "motors",          /* Text name for the task. */
-    STACK_SIZE,      /* Number of indexes in the xStack array. */
-    NULL,    /* Parameter passed into the task. */
-    tskIDLE_PRIORITY, /* Priority at which the task is created. */
-    task_motors_stack,          /* Array to use as the task's stack. */
-    &task_motors_tcb);  /* Variable to hold the task's data structure. */
+    (TaskFunction_t)task_motors,
+    "motors",
+    STACK_SIZE,
+    NULL,
+    tskIDLE_PRIORITY,
+    task_motors_stack,
+    &task_motors_tcb);
+
+  xTaskCreateStatic(
+    (TaskFunction_t)task_motor_info,
+    "motor_info",
+    STACK_SIZE,
+    NULL,
+    tskIDLE_PRIORITY,
+    task_motor_info_stack,
+    &task_motor_info_tcb);
+}
+
+void handleWebSocketMessage(void* arg, uint8_t* data, size_t len) {
+  AwsFrameInfo* info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    std::string_view s{ (const char*)data };
+    float x, y;
+
+    if (s.starts_with("drive")) {
+      sscanf((const char*)data, "drive %f %f", &x, &y);
+      drive(x, y);
+    }
+    else if (s.starts_with("turn")) {
+      sscanf((const char*)data, "turn %f %f", &x, &y);
+      turn(x, y);
+    }
+  }
+}
+void onEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
+  switch (type) {
+  case WS_EVT_CONNECT:
+    ESP_LOGI("main", "WebSocket client #%lu connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    break;
+  case WS_EVT_DISCONNECT:
+    ESP_LOGI("main", "WebSocket client #%lu disconnected\n", client->id());
+    break;
+  case WS_EVT_DATA:
+    handleWebSocketMessage(arg, data, len);
+    break;
+  case WS_EVT_PONG:
+  case WS_EVT_ERROR:
+    break;
+  }
 }
 
 void setup() {
   init_peripherals();
   connect_to_wifi();
+
+  /*
+   * Web Sockets
+   */
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html_start);
+    });
+
+  // Start server
   server.begin();
+
   ESP_LOGI("main", "Server started");
 }
 
-enum HttpState {
-  AwaitingRequest,
-  POST,
-  POST_DATA,
-  GET,
-};
-
-String headerLine1 = "";
-String line = "";        // make a String to hold incoming data from the client
-String postData = "";
-
-const int TIMEOUT_MS = 1000;
-
 void loop() {
-  NetworkClient client = server.accept();  // listen for incoming clients
-
-  if (client) {                     // if you get a client,
-    // ESP_LOGI("http", "New client.");  // print a message out the serial port
-
-    line = "";
-    HttpState state = AwaitingRequest;
-
-    uint32_t lastDataTick = xTaskGetTickCount();
-
-    while (client.connected()) {    // loop while the client's connected
-      if (client.available()) {     // if there's bytes to read from the client,
-        char c = client.read();     // read a byte, then
-        if (c == '\n') {            // if the byte is a newline character
-          switch (state) {
-          case AwaitingRequest:
-            if (line.startsWith("GET")) {
-              state = GET;
-              ESP_LOGI("http", "GET request");
-            }
-            else if (line.startsWith("POST")) {
-              state = POST;
-              // ESP_LOGI("http", "POST request");
-            }
-            else {
-              ESP_LOGI("http", "Invalid request: %s", line.c_str());
-            }
-
-            headerLine1 = line;
-            break;
-          case GET:
-          case POST:
-            if (line.length() == 0) {
-              if (state == GET) {
-                // if the current line is blank, you got two newline characters in a row.
-                // that's the end of the client HTTP request, so send a response:
-
-                ESP_LOGI("http", "GET data");
-
-                // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-                // and a content-type so the client knows what's coming, then a blank line:
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-type:text/html");
-                client.println();
-
-                // the content of the HTTP response follows the header:
-                client.write(index_html_start, index_html_size);
-
-                // The HTTP response ends with another blank line:
-                client.println();
-
-                client.stop();
-              }
-              else if (state == POST) {
-                // ESP_LOGI("http", "POST data");
-                state = POST_DATA;
-
-                postData = "";
-              }
-              else {
-                ESP_LOGE("http", "Bad request");
-
-                client.println("HTTP/1.1 400 Bad Request");
-                client.println("Content-type:text/html");
-                client.println();
-                client.println();
-
-                client.stop();
-              }
-            }
-            break;
-          case POST_DATA:
-            if (line.length() == 0) {
-              float x, y;
-              sscanf(postData.c_str(), "%f %f", &x, &y);
-
-              if (headerLine1.startsWith("POST /drive")) {
-                ESP_LOGI("http", "Drive: %f %f", x, y);
-                drive(x, y);
-              }
-              else if (headerLine1.startsWith("POST /turn")) {
-                ESP_LOGI("http", "Turn: %f %f", x, y);
-                turn(x, y);
-              }
-
-              client.println("HTTP/1.1 201 Created");
-              client.println("Content-type:text/html");
-              client.println();
-              client.println();
-
-              client.stop();
-            }
-            else {
-              // ESP_LOGI("http", "POST data received");
-              postData += line;
-            }
-            break;
-          }
-
-          // ESP_LOGI("http", "%s", line.c_str());
-
-          // if you got a newline, then clear currentLine:
-          line = "";
-        }
-        else if (c != '\r') {  // if you got anything else but a carriage return character,
-          line += c;      // add it to the end of the currentLine
-        }
-
-        lastDataTick = xTaskGetTickCount();
-      }
-      else {
-        if (xTaskGetTickCount() > lastDataTick + TIMEOUT_MS) {
-          ESP_LOGW("http", "Request timed out.");
-          ESP_LOGW("http", "Line remaining: %s", line.c_str());
-          break;
-        }
-      }
-    }
-    // close the connection:
-    client.stop();
-    // ESP_LOGI("main", "Client disconnected.");
-  }
-
   vTaskDelay(1);
+
+  ws.cleanupClients();
 }

@@ -5,12 +5,22 @@
     <meta charset='utf-8'>
     <meta http-equiv='X-UA-Compatible' content='IE=edge'>
     <title>Sheba 2</title>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <meta name="viewport"
+        content="user-scalable=no, initial-scale=1, maximum-scale=1, minimum-scale=1, width=device-width, height=device-height, target-densitydpi=device-dpi" />
 
     <style>
         html {
             font-family: Arial, Helvetica, sans-serif;
             overflow: hidden;
+
+            -webkit-user-select: none;
+            /* Safari */
+            -ms-user-select: none;
+            /* IE 10 and IE 11 */
+            user-select: none;
+            /* Standard syntax */
+
+            touch-action: none;
         }
 
         .container {
@@ -45,6 +55,9 @@
     </div>
 
     <script>
+        /** @type {WebSocket} */
+        let websocket;
+
         const stickDiameter = 200;
         const crosshairWidth = 8;
         const activeZoneRadius = 150;
@@ -80,8 +93,6 @@
                 this.oldY = 0;
 
                 this.isMouseOver = false;
-
-                this.postComplete = true;
             }
 
             ontouchstart() {
@@ -132,24 +143,13 @@
             }
 
             networkUpdate() {
-                if (this.postComplete) {
-                    this.postComplete = false;
-                    fetch(this.id, {
-                        method: "POST",
-                        body: this.x + " " + -this.y + "\n\n",
-                    }).then(() => {
-                        this.postComplete = true;
-                    });
+                if (websocket.readyState == websocket.OPEN) {
+                    websocket.send(this.id + " " + this.x + " " + -this.y);
+                    console.log(this.id + " " + this.x + " " + -this.y);
                 }
             }
 
             update() {
-                if (this.isMouseOver) {
-                    let host = window.location.host;
-
-                    this.networkUpdate();
-                }
-
                 this.oldX = this.x;
                 this.oldY = this.y;
             }
@@ -157,7 +157,6 @@
             reset() {
                 this.x = 0;
                 this.y = 0;
-                this.networkUpdate();
             }
 
             /**
@@ -214,6 +213,19 @@
             turn.reset();
         }
 
+        let gateway = `ws://${window.location.hostname}/ws`;
+        // gateway = 'ws://192.168.0.63/ws';
+
+        console.log('Connecting to ESP32 via WebSocket...');
+        websocket = new WebSocket(gateway);
+        websocket.onopen = event => {
+            console.log('WebSocket connected.');
+        }
+        websocket.onclose = event => {
+            console.log('WebSocket connection closed.');
+        }
+        websocket.onmessage = () => { };
+
         let oldTime = performance.now();
         function frame() {
             drive.draw();
@@ -227,8 +239,8 @@
 
             let time = performance.now();
             if (time > oldTime + 10) {
-                drive.update();
-                turn.update();
+                drive.networkUpdate();
+                turn.networkUpdate();
 
                 oldTime = time;
             }
